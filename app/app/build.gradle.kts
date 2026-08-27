@@ -107,12 +107,12 @@ val hookVersionName = (findProperty("hookVersionName") as String?) ?: "1.0"
 
 android {
     namespace = "com.tomfricks.hook"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.tom7.hook"
         minSdk = 29
-        targetSdk = 35
+        targetSdk = 36
         versionCode = hookVersionCode
         versionName = hookVersionName
 
@@ -204,6 +204,9 @@ dependencies {
     implementation(libs.revenuecat.purchases)
     // RevenueCat's dashboard-configured Paywalls + Customer Center (Compose).
     implementation(libs.revenuecat.purchases.ui)
+    // Looping muted demo clips on the pre-onboarding welcome slides.
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

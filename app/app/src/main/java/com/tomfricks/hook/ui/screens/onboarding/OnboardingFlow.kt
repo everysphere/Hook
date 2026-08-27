@@ -450,7 +450,7 @@ private fun EnableKeyboardStep(
     val context = LocalContext.current
     val setup = rememberKeyboardSetup()
     var photoAsked by remember { mutableStateOf(false) }
-    var notificationAsked by remember { mutableStateOf(false) }
+    var notificationsAsked by remember { mutableStateOf(false) }
 
     val photoLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -459,7 +459,7 @@ private fun EnableKeyboardStep(
     val notificationLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        notificationAsked = true
+        notificationsAsked = true
         if (granted) ScreenshotDetectionService.startIfAllowed(context)
     }
 
@@ -469,66 +469,62 @@ private fun EnableKeyboardStep(
         }
     }
 
-    val tasks = buildList {
-        add(
-            SetupTask(
-                title = "Turn on the Hook keyboard",
-                detail = "In Settings, under on-screen keyboards",
-                done = setup.enabled,
-                action = "Open Settings",
-                onAction = { PermissionUtils.openKeyboardSettings(context) }
-            )
-        )
-        add(
-            SetupTask(
-                title = "Switch to Hook",
-                detail = "Pick Hook from the keyboard chooser",
-                done = setup.selected,
-                action = "Choose Hook",
-                onAction = { PermissionUtils.showKeyboardPicker(context) }
-            )
-        )
-        add(
-            SetupTask(
-                title = "Allow access to your photos",
-                detail = if (photoAsked && !setup.photos) {
-                    "Android said no — tap to open Hook's settings and allow photos"
+    val tasks = listOf(
+        SetupTask(
+            title = "Turn on the Hook keyboard",
+            detail = "In Settings, under on-screen keyboards",
+            done = setup.enabled,
+            action = "Open Settings",
+            onAction = { PermissionUtils.openKeyboardSettings(context) }
+        ),
+        SetupTask(
+            title = "Switch to Hook",
+            detail = "Pick Hook from the keyboard chooser",
+            done = setup.selected,
+            action = "Choose Hook",
+            onAction = { PermissionUtils.showKeyboardPicker(context) }
+        ),
+        SetupTask(
+            title = "Allow access to your photos",
+            detail = if (photoAsked && !setup.photos) {
+                "Android said no — tap to open Hook's settings and allow photos"
+            } else {
+                "So Hook can read the screenshots you take"
+            },
+            done = setup.photos,
+            action = "Allow Photo Access",
+            // A second refusal makes the system dialog stop appearing at all,
+            // so from then on the only way through is app settings.
+            onAction = {
+                if (photoAsked && !setup.photos) {
+                    PermissionUtils.openAppSettings(context)
                 } else {
-                    "So Hook can read the screenshots you take"
-                },
-                done = setup.photos,
-                action = "Allow Photo Access",
-                onAction = {
-                    if (photoAsked && !setup.photos) {
-                        PermissionUtils.openAppSettings(context)
-                    } else {
-                        photoLauncher.launch(PermissionUtils.photoPermission)
-                    }
+                    photoLauncher.launch(PermissionUtils.photoPermission)
                 }
-            )
+            }
+        ),
+        SetupTask(
+            title = "Keep the Hook notification on",
+            detail = if (notificationsAsked && !setup.notifications) {
+                "Android said no — tap to open Hook's notification settings"
+            } else {
+                "Hook watches for screenshots while you're in another app, and " +
+                    "Android only lets it while a notification says so"
+            },
+            done = setup.notifications,
+            action = "Allow Notifications",
+            // Below Android 13 there is no dialog to show, and after a refusal
+            // there is no longer one — either way, settings is the only route.
+            onAction = {
+                val permission = PermissionUtils.notificationPermission
+                if (permission != null && !notificationsAsked) {
+                    notificationLauncher.launch(permission)
+                } else {
+                    PermissionUtils.openNotificationSettings(context)
+                }
+            }
         )
-        if (PermissionUtils.needsNotificationPermission) {
-            add(
-                SetupTask(
-                    title = "Allow notifications",
-                    detail = if (notificationAsked && !setup.notifications) {
-                        "Android said no — tap to open Hook's settings and allow notifications"
-                    } else {
-                        "So you can see when Hook is watching for screenshots"
-                    },
-                    done = setup.notifications,
-                    action = "Allow Notifications",
-                    onAction = {
-                        if (notificationAsked && !setup.notifications) {
-                            PermissionUtils.openAppSettings(context)
-                        } else {
-                            notificationLauncher.launch(PermissionUtils.notificationPermission)
-                        }
-                    }
-                )
-            )
-        }
-    }
+    )
     val nextIndex = tasks.indexOfFirst { !it.done }
     val next = tasks.getOrNull(nextIndex)
 

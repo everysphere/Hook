@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 
 object PermissionUtils {
@@ -30,22 +31,32 @@ object PermissionUtils {
             PackageManager.PERMISSION_GRANTED
 
     /**
-     * The permission that lets the screenshot-detection foreground service
-     * post its ongoing "Hook is active" notification. Below 13 the permission
-     * does not exist and notifications are allowed by default.
+     * The permission behind the ongoing notification the screenshot service
+     * must show, or null where there is nothing to ask for.
+     *
+     * Android 13 made notifications a runtime permission; before that they were
+     * granted at install. Nullable rather than a lie, so a caller can't
+     * accidentally launch a permission dialog on a device that has none — see
+     * [openNotificationSettings] for the way through on those.
      */
-    val needsNotificationPermission: Boolean
-        get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    val notificationPermission: String?
+        get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.POST_NOTIFICATIONS
+        } else {
+            null
+        }
 
-    val notificationPermission: String
-        get() = Manifest.permission.POST_NOTIFICATIONS
-
-    /** True once Android will actually show the foreground-service notification. */
-    fun hasNotificationAccess(context: Context): Boolean {
-        if (!needsNotificationPermission) return true
-        return ContextCompat.checkSelfPermission(context, notificationPermission) ==
-            PackageManager.PERMISSION_GRANTED
-    }
+    /**
+     * True once Hook may post notifications — without it, Android 13+ silently
+     * withholds the foreground service's notification, and the screenshot
+     * watcher runs with nothing on screen to say so.
+     *
+     * This asks the user-facing toggle rather than the permission, which is the
+     * honest answer on every API level: below 33 there is no runtime grant to
+     * check, but the user can still have switched notifications off in Settings.
+     */
+    fun hasNotificationAccess(context: Context): Boolean =
+        NotificationManagerCompat.from(context).areNotificationsEnabled()
 
     /** Hook's own entry in the system app-settings screen. */
     fun openAppSettings(context: Context) {
@@ -54,6 +65,26 @@ object PermissionUtils {
             android.net.Uri.fromParts("package", context.packageName, null)
         ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
         context.startActivity(intent)
+    }
+
+    /**
+     * Hook's notification settings, where the toggle actually lives.
+     *
+     * The only route left once the runtime dialog is spent — and the only route
+     * at all below Android 13, where there was never a dialog to spend.
+     */
+    fun openNotificationSettings(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } else {
+            // No per-app notification screen before Oreo; the app's own settings
+            // page is the closest thing to it.
+            openAppSettings(context)
+        }
     }
 
     /**

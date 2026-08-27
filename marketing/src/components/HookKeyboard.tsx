@@ -14,7 +14,7 @@ export type Suggestion = {
 /**
  * The Hook keyboard surface, rebuilt from `ui/keyboard/KeyboardPanel.kt` and
  * `ui/theme/Pebble.kt`: allowance chip, transcript (screenshot left, replies
- * right), and the bottom bar with "+", the Generate pill, gear and backspace.
+ * right), and the bottom bar with "+", the Rizz pill, globe, gear and backspace.
  *
  * Dark theme on purpose — that is what the app looks like on the phones the
  * audience is holding at 1am.
@@ -37,8 +37,6 @@ export const HookKeyboard: React.FC<{
   freeRemaining = 3,
   generatePress = 0,
 }) => {
-  const hasReplies = suggestions.some((s) => (s.reveal ?? 1) > 0);
-
   return (
     <div
       style={{
@@ -113,13 +111,7 @@ export const HookKeyboard: React.FC<{
         />
         <div style={{ height: 28 }} />
         <BottomBar
-          label={
-            status === "generating"
-              ? "Cooking rizz…"
-              : hasReplies
-                ? "Generate more rizz"
-                : "Generate rizz"
-          }
+          label={status === "generating" ? "Cooking…" : "Rizz"}
           busy={status === "generating"}
           press={generatePress}
         />
@@ -315,6 +307,12 @@ const BottomBar: React.FC<{
     >
       {label}
     </div>
+
+    <IconPebble>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M2 12h20" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </IconPebble>
 
     <IconPebble>
       <circle cx="12" cy="12" r="3" />

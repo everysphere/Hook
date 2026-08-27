@@ -32,8 +32,8 @@ data class KeyboardSetup(
     val selected: Boolean,
     /** Hook may read the screenshots the user takes. */
     val photos: Boolean,
-    /** Android will show the foreground-service notification. */
-    val notifications: Boolean,
+    /** Hook may post notifications — what makes the watcher visible while it runs. */
+    val notifications: Boolean = false,
     /** Hook's own keyboard view is on screen right now. */
     val showing: Boolean
 ) {

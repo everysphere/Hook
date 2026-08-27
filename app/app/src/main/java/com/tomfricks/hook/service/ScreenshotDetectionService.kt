@@ -3,6 +3,7 @@ package com.tomfricks.hook.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -16,6 +17,7 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.tomfricks.hook.MainActivity
 import com.tomfricks.hook.R
 import com.tomfricks.hook.api.ApiService
 import com.tomfricks.hook.api.GenerateRepliesResult
@@ -85,35 +87,42 @@ class ScreenshotDetectionService : Service() {
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Play policy requires an ongoing, user-visible notification for the
+        // whole life of a FOREGROUND_SERVICE_DATA_SYNC service. Promote to the
+        // foreground on *every* start before doing anything else — including the
+        // null-intent redelivery the OS sends when it restarts a START_STICKY
+        // service, and the ACTION_STOP path. This guarantees the notification is
+        // never missing and never breaks the startForegroundService() contract
+        // (which mandates a startForeground call within ~5s of the launch).
+        startForegroundWithNotification()
+
         when (intent?.action) {
-            ACTION_START -> {
-                // startForeground must run if we were started with
-                // startForegroundService, even when we are about to stop.
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    startForeground(
-                        NOTIFICATION_ID,
-                        createNotification(),
-                        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                    )
-                } else {
-                    startForeground(NOTIFICATION_ID, createNotification())
-                }
-                if (!PermissionUtils.hasNotificationAccess(this)) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    isServiceRunning = false
-                    stopSelf()
-                    return START_NOT_STICKY
-                }
-                startScreenshotDetection()
-                isServiceRunning = true
-            }
             ACTION_STOP -> {
                 stopScreenshotDetection()
                 isServiceRunning = false
                 stopSelf()
             }
+            // ACTION_START, or a null-intent restart of the sticky service:
+            // (re)start detection and keep the notification up.
+            else -> {
+                startScreenshotDetection()
+                isServiceRunning = true
+            }
         }
         return START_STICKY
+    }
+
+    private fun startForegroundWithNotification() {
+        // For Android 14+, the service type must be passed explicitly.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                createNotification(),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, createNotification())
+        }
     }
     
     override fun onBind(intent: Intent?): IBinder? = null
@@ -126,6 +135,9 @@ class ScreenshotDetectionService : Service() {
     }
     
     private fun startScreenshotDetection() {
+        // Already watching — a sticky restart must not stack a second observer.
+        if (screenshotObserver != null) return
+
         // Monitor external storage for new screenshots
         val handler = Handler(Looper.getMainLooper())
         
@@ -259,12 +271,25 @@ class ScreenshotDetectionService : Service() {
     }
     
     private fun createNotification(): Notification {
+        // Tapping the notification should land somewhere, and "somewhere" is
+        // Hook itself. FLAG_IMMUTABLE is required from Android 12 on; the
+        // update flag keeps the one PendingIntent rather than stacking copies.
+        val contentIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Hook is active")
             .setContentText("Take a screenshot for automatic AI replies")
             .setSmallIcon(R.drawable.ic_heart)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setContentIntent(contentIntent)
             .setOngoing(true)
             .setSilent(true)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)

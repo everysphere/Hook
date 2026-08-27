@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -52,8 +53,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tomfricks.hook.R
 import com.tomfricks.hook.keyboard.ConversationSession
 import com.tomfricks.hook.keyboard.RizzSession
+import com.tomfricks.hook.ui.components.LoopingVideo
 import com.tomfricks.hook.utils.PermissionUtils
 import kotlinx.coroutines.delay
 
@@ -271,8 +274,8 @@ private fun Coach(phase: DemoPhase) {
 /**
  * Covers the demo until Hook is the keyboard on screen.
  *
- * The placeholder box is where the how-to-switch GIF goes; the button is the
- * reliable way to do it on Android, since the globe key isn't on every keyboard.
+ * The clip shows the switch being made; the button below it is the reliable way
+ * to do it on Android, since the globe key isn't on every keyboard.
  */
 @Composable
 private fun SwitchKeyboardScrim(
@@ -317,25 +320,20 @@ private fun SwitchKeyboardScrim(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Placeholder for the how-to-switch GIF.
-            Box(
+            // The clip is roughly square, so the frame is too — the recording
+            // fills it edge to edge rather than being cropped to a letterbox.
+            LoopingVideo(
+                video = R.raw.keyboard_switch,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(180.dp)
+                    .fillMaxWidth(0.72f)
+                    .aspectRatio(1f)
                     .clip(RoundedCornerShape(20.dp))
-                    .background(Color.White.copy(alpha = 0.12f))
                     .border(
                         width = 1.dp,
                         color = Color.White.copy(alpha = 0.25f),
                         shape = RoundedCornerShape(20.dp)
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "🌐",
-                    style = TextStyle(fontSize = 44.sp)
-                )
-            }
+                    )
+            )
 
             Spacer(modifier = Modifier.height(20.dp))
 
