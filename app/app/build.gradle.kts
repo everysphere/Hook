@@ -107,12 +107,12 @@ val hookVersionName = (findProperty("hookVersionName") as String?) ?: "1.0"
 
 android {
     namespace = "com.tomfricks.hook"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.tom7.hook"
         minSdk = 29
-        targetSdk = 35
+        targetSdk = 36
         versionCode = hookVersionCode
         versionName = hookVersionName
 

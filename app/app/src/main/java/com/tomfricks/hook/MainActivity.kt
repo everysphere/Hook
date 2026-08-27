@@ -4,7 +4,10 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
@@ -27,6 +30,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android 16 disables the edge-to-edge opt-out. Draw behind the system
+        // bars, then inset the Compose tree so controls stay tappable.
+        enableEdgeToEdge()
 
         handlePaywallIntent(intent)
 
@@ -41,7 +47,9 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    HookNavigation(paywallRequest = paywallRequest)
+                    Box(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
+                        HookNavigation(paywallRequest = paywallRequest)
+                    }
                 }
             }
         }
