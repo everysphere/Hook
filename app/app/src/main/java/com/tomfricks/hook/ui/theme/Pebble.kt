@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -63,7 +64,7 @@ enum class PebbleTone {
     /** Bright dark-blue — primary actions and reply suggestions. */
     BLUE,
 
-    /** Near-black slate — the "Generate rizz" style command pill. */
+    /** Near-black slate — the "Rizz" style command pill. */
     SLATE,
 
     /** Muted surface tint — settings rows, tips, secondary chrome. */
@@ -263,7 +264,7 @@ fun PebbleButton(
     }
 }
 
-/** The dark command pill, e.g. "Generate rizz". */
+/** The dark command pill, e.g. "Rizz". */
 @Composable
 fun PebbleActionPill(
     text: String,
@@ -282,11 +283,13 @@ fun PebbleActionPill(
     ) {
         Text(
             text = text,
-            modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
             style = MaterialTheme.typography.titleMedium,
             color = Color.White,
             fontWeight = FontWeight.SemiBold,
-            maxLines = 1
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }

@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -81,6 +82,7 @@ fun KeyboardPanel(
     /** Long-press a suggestion, confirm, and it lands here. */
     onReportSuggestion: (String) -> Unit,
     onNewChatClick: () -> Unit,
+    onSwitchKeyboardClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onBackspaceClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -89,10 +91,6 @@ fun KeyboardPanel(
     paywallRequired: Boolean = false,
     onUpgradeClick: () -> Unit = {}
 ) {
-    val hasReplies = items.any {
-        it is TranscriptItem.SentReply || it is TranscriptItem.Suggestion
-    }
-
     // Pro is never nagged and never blocked.
     val showUpsell = paywallRequired && !isPro
 
@@ -165,7 +163,7 @@ fun KeyboardPanel(
         }
 
         // The controls rest on a dark fade that rises off the bottom of the
-        // panel, so the "Generate rizz" pill and its neighbours read clearly
+        // panel, so the "Rizz" pill and its neighbours read clearly
         // over the chat passing behind them and the chat dissolves into the
         // dark instead of being cut off by it.
         //
@@ -219,11 +217,11 @@ fun KeyboardPanel(
 
             KeyboardBottomBar(
                 state = state,
-                hasReplies = hasReplies,
                 showUpsell = showUpsell,
                 onGenerate = onGenerate,
                 onUpgradeClick = onUpgradeClick,
                 onNewChatClick = onNewChatClick,
+                onSwitchKeyboardClick = onSwitchKeyboardClick,
                 onSettingsClick = onSettingsClick,
                 onBackspaceClick = onBackspaceClick
             )
@@ -499,11 +497,11 @@ private fun ChatTranscript(
 @Composable
 private fun KeyboardBottomBar(
     state: RizzSession.Status,
-    hasReplies: Boolean,
     showUpsell: Boolean,
     onGenerate: () -> Unit,
     onUpgradeClick: () -> Unit,
     onNewChatClick: () -> Unit,
+    onSwitchKeyboardClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onBackspaceClick: () -> Unit
 ) {
@@ -523,10 +521,9 @@ private fun KeyboardBottomBar(
 
         PebbleActionPill(
             text = when {
-                showUpsell -> "Unlock unlimited rizz"
-                isGenerating -> "Cooking rizz…"
-                hasReplies -> "Generate more rizz"
-                else -> "Generate rizz"
+                showUpsell -> "Go Pro"
+                isGenerating -> "Cooking…"
+                else -> "Rizz"
             },
             // An IME can't host the Play purchase sheet, so this hands the user
             // to MainActivity on the paywall route instead.
@@ -534,6 +531,14 @@ private fun KeyboardBottomBar(
             // Locked while a round is cooking so it can't be fired twice.
             enabled = showUpsell || !isGenerating,
             modifier = Modifier.weight(1f)
+        )
+
+        // Older Android and many OEM skins have no nav-bar IME switcher, so
+        // this globe is the way back to Gboard (or any other keyboard).
+        PebbleIconButton(
+            icon = Icons.Default.Language,
+            contentDescription = "Switch keyboard",
+            onClick = onSwitchKeyboardClick
         )
 
         // Settings moved to their own gear now that "+" starts a new chat.

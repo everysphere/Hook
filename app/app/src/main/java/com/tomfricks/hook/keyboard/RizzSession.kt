@@ -100,7 +100,7 @@ object RizzSession {
      * Set when the server refused a generation because the lifetime free
      * allowance is spent (HTTP 402). Sticky on purpose: it survives [reset] and
      * only clears once the user is entitled, so the keyboard keeps showing the
-     * upsell instead of a "Generate rizz" button that can only fail.
+     * upsell instead of a "Rizz" button that can only fail.
      */
     var paywallRequired by mutableStateOf(false)
         private set
