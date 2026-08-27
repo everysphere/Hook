@@ -6,6 +6,7 @@ import android.os.Build
 import android.util.Log
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -129,6 +130,7 @@ class HookKeyboardService : InputMethodService(), LifecycleOwner {
                         onSuggestionClick = ::onSuggestionClicked,
                         onReportSuggestion = ::onSuggestionReported,
                         onNewChatClick = ::onNewChatClicked,
+                        onSwitchKeyboardClick = ::onSwitchKeyboardClicked,
                         onSettingsClick = ::openSettings,
                         onBackspaceClick = ::onBackspaceClicked,
                         isPro = isPro,
@@ -303,6 +305,20 @@ class HookKeyboardService : InputMethodService(), LifecycleOwner {
 
     private fun onBackspaceClicked() {
         currentInputConnection?.deleteSurroundingText(1, 0)
+    }
+
+    /**
+     * Open the system IME picker so the user can leave Hook.
+     *
+     * Newer Android puts this on the nav bar; older versions and a lot of OEM
+     * skins don't, which is why the globe lives on the keyboard itself. Try
+     * the last keyboard first — that's almost always Gboard — and fall back
+     * to the picker when Android won't switch directly.
+     */
+    private fun onSwitchKeyboardClicked() {
+        if (switchToPreviousInputMethod()) return
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.showInputMethodPicker()
     }
 
     private fun stopScreenshotService() {

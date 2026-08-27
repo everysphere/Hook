@@ -11,12 +11,12 @@
     <string name="select_keyboard_title">Select Hook as Input Method</string>
     <string name="select_keyboard_description">When typing, tap the keyboard icon and select Hook</string>
     <string name="how_to_use_title">How to Use</string>
-    <string name="how_to_use_description">Take a screenshot of your chat, then tap Generate rizz in the Hook keyboard to get AI-generated replies</string>
+    <string name="how_to_use_description">Take a screenshot of your chat, then tap Rizz in the Hook keyboard to get AI-generated replies</string>
     
     <!-- Keyboard -->
-    <string name="tap_heart_prompt">1. Take screenshot\n2. Tap Generate rizz</string>
+    <string name="tap_heart_prompt">1. Take screenshot\n2. Tap Rizz</string>
     <string name="generating_replies">Generating replies…</string>
-    <string name="error_no_screenshot">Take a screenshot first, then tap Generate rizz</string>
+    <string name="error_no_screenshot">Take a screenshot first, then tap Rizz</string>
     <string name="error_api_failed">Failed to generate replies. Try again.</string>
     
     <!-- Settings -->
