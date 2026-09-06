@@ -228,10 +228,10 @@ RESPONSE_FORMAT = {
 
 
 # --- Model Config ---
-# qwen3.6-27b is currently the only vision-capable model Groq serves us; the
+# qwen3.8-27b is currently the vision-capable model Groq serves us; the
 # llama-4 scout/maverick pair it replaced now returns model_not_found.
-MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
-FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "qwen/qwen3.6-27b")
+MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b")
 
 # It is a reasoning model: left to itself it emits a <think> block before the
 # answer, which makes both JSON modes fail outright. "none" turns that off.
