@@ -364,9 +364,8 @@ class ApiService(
 
     private fun bitmapToBase64(bitmap: Bitmap): String {
         // Scale down before compression to make upload instant (<60KB instead of 4MB).
-        // 512px also keeps the image's share of the Groq prompt-token budget down,
-        // which is what the per-minute rate limit is actually spent on.
-        val maxWidth = 512
+        // Vision tokens dominate Groq's free-tier TPM, so keep this tight.
+        val maxWidth = 384
         val scaledBitmap = if (bitmap.width > maxWidth) {
             val ratio = maxWidth.toFloat() / bitmap.width.toFloat()
             val newHeight = (bitmap.height * ratio).toInt()
@@ -376,7 +375,7 @@ class ApiService(
         }
 
         val outputStream = ByteArrayOutputStream()
-        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 60, outputStream)
+        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 50, outputStream)
         val byteArray = outputStream.toByteArray()
 
         if (scaledBitmap != bitmap) {

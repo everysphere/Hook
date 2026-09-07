@@ -2,12 +2,16 @@ import os
 import json
 import hmac
 import re
-from typing import List, Literal, Optional
+import base64
+import threading
+from typing import List, Literal, Optional, Tuple
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from openai import AsyncOpenAI, RateLimitError
+from google import genai
+from google.genai import types as gemini_types
 import httpx
 from dotenv import load_dotenv
 import time
@@ -35,6 +39,36 @@ _client = AsyncOpenAI(
         timeout=httpx.Timeout(connect=3.0, read=20.0, write=10.0, pool=3.0),
     ),
 )
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+# Gemini's JSON schema dialect does not accept additionalProperties.
+GEMINI_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "suggestion_1": {"type": "string"},
+        "suggestion_2": {"type": "string"},
+        "suggestion_3": {"type": "string"},
+        "updated_context_summary": {"type": "string"},
+    },
+    "required": [
+        "suggestion_1", "suggestion_2", "suggestion_3",
+        "updated_context_summary",
+    ],
+}
+
+_gemini = None
+if GEMINI_API_KEY:
+    _gemini = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=gemini_types.HttpOptions(
+            timeout=20_000,
+            retry_options=gemini_types.HttpRetryOptions(attempts=1),
+        ),
+    )
+    print(f"[INFO] Gemini provider enabled ({GEMINI_MODEL})")
+else:
+    print("[INFO] GEMINI_API_KEY unset — generation is Groq-only")
 
 app = FastAPI(
     title="Hook",
@@ -238,19 +272,70 @@ FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "qwen/qwen3.8-27b")
 # Groq only accepts "none" or "default" here.
 REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "none")
 
-# Compact prompt — fewer input tokens = faster processing.
+# Declared completion ceiling counts against Groq TPM even when unused — keep
+# this tight (3 short replies + a ≤60-word summary).
+MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "320"))
+
+# Tight prompt — vision tokens dominate Groq's 8K TPM free tier.
 # "JSON" must appear literally for Groq's json_object fallback mode.
-PROMPT_TEMPLATE = """You are an expert flirting agent. Your task is to analyse the attached screenshot and generate 3 flirty chat reply suggestions keeping the parameters described below.
+PROMPT_TEMPLATE = """3 flirty chat replies for this screenshot. JSON only.
 {context_block}
-Preferences: style={style}, tone={tone}, flirt={flirt_level}, length={reply_length}, emoji={emoji_use}{profile_info}
+prefs: {style}/{tone}/flirt={flirt_level}/len={reply_length}/emoji={emoji_use}{profile_info}
+len: SHORT=3-4 words; NORMAL=1 sentence; EXTENDED=1-2 sentences
+JSON: {{"suggestion_1":"...","suggestion_2":"...","suggestion_3":"...","updated_context_summary":"≤60 words; fold this shot into prior facts"}}"""
 
-Rules:
-- SHORT=3-4 words, NORMAL=1 sentence, EXTENDED=1-2 sentences
-- NEVER/MINIMAL/EXPRESSIVE controls emoji usage
-- LESS/MEDIUM/BOLD controls flirt intensity
-- updated_context_summary: rewrite the running conversation summary by folding in this newest screenshot without losing earlier facts (who the match is, tone, key topics/facts); keep it concise, a few sentences, max ~150 words
 
-Reply with JSON only: {{"suggestion_1": "...", "suggestion_2": "...", "suggestion_3": "...", "updated_context_summary": "..."}}"""
+class ProviderQueue:
+    """Sticky primary/secondary between Groq and Gemini.
+
+    Whoever fails is demoted; the other stays primary until *it* fails. The
+    client only sees HTTP 429 when every available provider is rate-limited.
+    """
+
+    GROQ = "groq"
+    GEMINI = "gemini"
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._primary = self.GROQ
+
+    def available(self) -> List[str]:
+        providers = [self.GROQ]
+        if _gemini is not None:
+            providers.append(self.GEMINI)
+        return providers
+
+    def order(self) -> List[str]:
+        available = self.available()
+        with self._lock:
+            primary = self._primary if self._primary in available else available[0]
+            return [primary] + [p for p in available if p != primary]
+
+    def demote(self, failed: str) -> None:
+        available = self.available()
+        if len(available) < 2 or failed not in available:
+            return
+        with self._lock:
+            for provider in available:
+                if provider != failed:
+                    if self._primary != provider:
+                        print(f"[INFO] provider queue: primary → {provider} "
+                              f"({failed} demoted)")
+                    self._primary = provider
+                    return
+
+    def prefer(self, winner: str) -> None:
+        available = self.available()
+        if winner not in available:
+            return
+        with self._lock:
+            if self._primary != winner:
+                print(f"[INFO] provider queue: primary → {winner}")
+            self._primary = winner
+
+
+provider_queue = ProviderQueue()
+
 
 def strip_reasoning(text: str) -> str:
     """Drop any <think> block and code fences a reasoning model may still emit."""
@@ -267,8 +352,45 @@ def strip_reasoning(text: str) -> str:
     return text.strip()
 
 
+def parse_suggestions(text: str) -> Tuple[List[str], str]:
+    """JSON text → (three suggestions, summary). Empty suggestions on failure."""
+    if not text:
+        return [], ""
+    try:
+        data = json.loads(strip_reasoning(text))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return [], ""
+    suggestions = [
+        data.get("suggestion_1", ""),
+        data.get("suggestion_2", ""),
+        data.get("suggestion_3", ""),
+    ]
+    raw_summary = data.get("updated_context_summary", "") or ""
+    summary = strip_reasoning(raw_summary) if raw_summary else ""
+    if len(suggestions) < 3 or not all(suggestions):
+        return [], ""
+    return suggestions, summary
+
+
+def usage_tokens(response) -> Tuple[Optional[int], Optional[int]]:
+    """Prompt/completion counts from Groq or Gemini usage objects."""
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        return (
+            getattr(usage, "prompt_tokens", None),
+            getattr(usage, "completion_tokens", None),
+        )
+    meta = getattr(response, "usage_metadata", None)
+    if meta is not None:
+        return (
+            getattr(meta, "prompt_token_count", None),
+            getattr(meta, "candidates_token_count", None),
+        )
+    return None, None
+
+
 def retry_after_seconds(err: Exception, default: int = 30) -> int:
-    """Seconds to wait after a Groq 429, from the header or the message text."""
+    """Seconds to wait after a provider 429, from the header or the message text."""
     header = getattr(getattr(err, "response", None), "headers", None)
     if header:
         raw = header.get("retry-after")
@@ -288,32 +410,115 @@ def build_context_block(context: Optional[ConversationContext]) -> str:
     """Render the prior context so the model can carry the conversation forward.
 
     Empty when there is nothing yet, so the first request is unchanged.
+    Caps size so a long session does not blow Groq's TPM budget.
     """
     if context is None:
         return ""
     summary = (context.summary or "").strip()
-    sent = [r for r in (context.sent_replies or []) if r and r.strip()]
+    if len(summary) > 400:
+        summary = summary[:397].rstrip() + "..."
+    sent = [r for r in (context.sent_replies or []) if r and r.strip()][-5:]
     if not summary and not sent:
         return ""
-    lines = ["\nConversation so far (context only — do not repeat verbatim):"]
+    lines = ["ctx (do not repeat):"]
     if summary:
-        lines.append(f"Summary: {summary}")
+        lines.append(f"sum: {summary}")
     if sent:
-        joined = "\n".join(f"- {r}" for r in sent)
-        lines.append("Replies the user has already sent in this conversation:\n" + joined)
+        lines.append("sent:\n" + "\n".join(f"- {r}" for r in sent))
     return "\n".join(lines) + "\n"
 
 
 def build_prompt(p: UserPreferences, context: Optional[ConversationContext] = None) -> str:
     parts = []
-    if p.profile_name: parts.append(f", name={p.profile_name}")
-    if p.profile_gender: parts.append(f", gender={p.profile_gender}")
+    if p.profile_name:
+        parts.append(f" name={p.profile_name}")
+    if p.profile_gender:
+        parts.append(f" gender={p.profile_gender}")
     profile_info = "".join(parts)
     return PROMPT_TEMPLATE.format(
         context_block=build_context_block(context),
         style=p.style, tone=p.tone, flirt_level=p.flirt_level,
         reply_length=p.reply_length, emoji_use=p.emoji_use, profile_info=profile_info
     )
+
+
+async def groq_complete(messages: list) -> Tuple[List[str], str]:
+    """Try Groq formats until one yields three suggestions. Raises on rate limit."""
+    attempts = [
+        (MODEL, RESPONSE_FORMAT),
+        (MODEL, {"type": "json_object"}),
+    ]
+    if FALLBACK_MODEL != MODEL:
+        attempts.append((FALLBACK_MODEL, {"type": "json_object"}))
+
+    last_error: Optional[Exception] = None
+    for model, response_format in attempts:
+        try:
+            kwargs = {}
+            if REASONING_EFFORT:
+                kwargs["reasoning_effort"] = REASONING_EFFORT
+            response = await _client.chat.completions.create(
+                model=model,
+                messages=messages,
+                response_format=response_format,
+                max_tokens=MAX_OUTPUT_TOKENS,
+                temperature=0.7,
+                **kwargs,
+            )
+            suggestions, summary = parse_suggestions(
+                response.choices[0].message.content or ""
+            )
+            if suggestions:
+                prompt_tok, completion_tok = usage_tokens(response)
+                print(f"[PERF] {model}: prompt={prompt_tok} "
+                      f"completion={completion_tok}")
+                return suggestions, summary
+        except RateLimitError:
+            raise
+        except Exception as e:
+            print(f"[ERR] {model}: {e}")
+            last_error = e
+            continue
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Groq returned nothing valid")
+
+
+async def gemini_complete(jpeg_bytes: bytes, prompt: str) -> Tuple[List[str], str]:
+    """One Gemini vision+JSON call. Raises on API or parse failure."""
+    if _gemini is None:
+        raise RuntimeError("Gemini client is not configured")
+    response = await _gemini.aio.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=[
+            gemini_types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
+            prompt,
+        ],
+        config=gemini_types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=GEMINI_RESPONSE_SCHEMA,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            temperature=0.7,
+            automatic_function_calling=gemini_types.AutomaticFunctionCallingConfig(
+                disable=True
+            ),
+        ),
+    )
+    prompt_tok, completion_tok = usage_tokens(response)
+    print(f"[PERF] {GEMINI_MODEL}: prompt={prompt_tok} "
+          f"completion={completion_tok}")
+    suggestions, summary = parse_suggestions(response.text or "")
+    if not suggestions:
+        raise RuntimeError("Gemini returned nothing valid")
+    return suggestions, summary
+
+
+def _is_gemini_rate_limit(err: Exception) -> bool:
+    code = getattr(err, "code", None)
+    if code == 429:
+        return True
+    status = getattr(err, "status_code", None)
+    return status == 429
 
 
 # --- Routes ---
@@ -438,7 +643,7 @@ async def generate_replies(
 
     try:
         # Pass the base64 payload straight through as a data URL — no re-encoding.
-        # Android client already sends 640px 70% JPEG.
+        # Android client already sends a downscaled JPEG.
         b64 = request.screenshot_base64
         if b64.startswith("data:"):
             b64 = b64.split(",", 1)[-1]
@@ -455,74 +660,56 @@ async def generate_replies(
             ],
         }]
 
-        suggestions = []
+        suggestions: List[str] = []
         updated_summary = ""
-        last_error = None
+        last_error: Optional[Exception] = None
+        rate_limited_errors: List[Exception] = []
+        tried: List[str] = []
 
-        # (model, response_format) attempts. json_schema is strict but only some
-        # Groq models accept it; json_object is the universal fallback.
-        attempts = [
-            (MODEL, RESPONSE_FORMAT),
-            (MODEL, {"type": "json_object"}),
-            (FALLBACK_MODEL, {"type": "json_object"}),
-        ]
-
-        for model, response_format in attempts:
+        for provider in provider_queue.order():
+            tried.append(provider)
+            provider_start = time.time()
             try:
-                groq_start = time.time()
-                kwargs = {}
-                if REASONING_EFFORT:
-                    kwargs["reasoning_effort"] = REASONING_EFFORT
-                response = await _client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    response_format=response_format,
-                    # Room for 3 replies plus the ~150-word rolling summary.
-                    max_tokens=600,
-                    temperature=0.7,
-                    **kwargs,
-                )
-                groq_time = time.time() - groq_start
-
-                text = response.choices[0].message.content
-                candidate_summary = ""
-                if text:
-                    data = json.loads(strip_reasoning(text))
-                    suggestions = [
-                        data.get("suggestion_1", ""),
-                        data.get("suggestion_2", ""),
-                        data.get("suggestion_3", ""),
-                    ]
-                    # Present in the json_schema branch and, when the model
-                    # cooperates, in the json_object fallback too.
-                    raw_summary = data.get("updated_context_summary", "")
-                    candidate_summary = strip_reasoning(raw_summary) if raw_summary else ""
-
-                if suggestions and len(suggestions) >= 3 and all(suggestions):
-                    updated_summary = candidate_summary
-                    total = time.time() - start_time
-                    print(f"[PERF] {model}: groq={groq_time:.2f}s total={total:.2f}s")
-                    break
+                if provider == ProviderQueue.GROQ:
+                    suggestions, updated_summary = await groq_complete(messages)
                 else:
-                    suggestions = []
+                    jpeg_bytes = base64.b64decode(b64)
+                    suggestions, updated_summary = await gemini_complete(
+                        jpeg_bytes, prompt
+                    )
+                provider_queue.prefer(provider)
+                total = time.time() - start_time
+                print(f"[PERF] {provider}: ok in {time.time() - provider_start:.2f}s "
+                      f"total={total:.2f}s order={tried}")
+                break
             except RateLimitError as e:
-                # Retrying only spends more of the very budget we just ran out
-                # of, so surface it straight away as a 429 the client can act on.
-                print(f"[ERR] {model}: rate limited: {e}")
-                raise HTTPException(
-                    status_code=429,
-                    detail="Rate limit reached. Try again in a moment.",
-                    headers={"Retry-After": str(retry_after_seconds(e))},
-                )
-            except Exception as e:
-                print(f"[ERR] {model}: {e}")
+                print(f"[ERR] {provider}: rate limited: {e}")
+                rate_limited_errors.append(e)
+                provider_queue.demote(provider)
                 last_error = e
+                continue
+            except Exception as e:
+                print(f"[ERR] {provider}: {e}")
+                last_error = e
+                if _is_gemini_rate_limit(e):
+                    rate_limited_errors.append(e)
+                provider_queue.demote(provider)
                 continue
 
         if not suggestions or len(suggestions) < 3:
-            # The provider's own words (model ids, quota wording, stack detail)
-            # stay in our logs: the client turns any 5xx into its own copy, and
-            # echoing upstream text back has only ever leaked internals.
+            # BUSY only when every provider we could try was rate-limited —
+            # one provider failing must be covered by the other silently.
+            if rate_limited_errors and len(rate_limited_errors) == len(tried):
+                print(f"[ERR] all providers rate-limited ({tried}): {last_error}")
+                raise HTTPException(
+                    status_code=429,
+                    detail="Rate limit reached. Try again in a moment.",
+                    headers={
+                        "Retry-After": str(
+                            retry_after_seconds(rate_limited_errors[-1])
+                        )
+                    },
+                )
             print(f"[ERR] generation produced no usable suggestions: "
                   f"{last_error if last_error else 'model returned nothing valid'}")
             raise HTTPException(status_code=500, detail="AI generation failed")
@@ -537,8 +724,8 @@ async def generate_replies(
         )
 
         # Only now — after a generation the user actually got — do we spend
-        # allowance. A Groq failure above never costs the user anything, and Pro
-        # users never touch the free counter at all.
+        # allowance. A provider failure above never costs the user anything, and
+        # Pro users never touch the free counter at all.
         if not pro:
             try:
                 free_used = await store.increment(app_user_id)

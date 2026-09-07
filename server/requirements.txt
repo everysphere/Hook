@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 openai>=2.9.0,<3
+google-genai>=2.18.1
 httpx
 pillow
 python-dotenv

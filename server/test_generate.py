@@ -20,6 +20,7 @@ os.environ["ALLOWANCE_DB_PATH"] = os.path.join(
 os.environ.pop("SUPABASE_URL", None)
 os.environ.pop("SUPABASE_SERVICE_ROLE_KEY", None)
 os.environ.pop("ALLOWED_ORIGINS", None)
+os.environ.pop("GEMINI_API_KEY", None)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -104,8 +105,29 @@ def store(monkeypatch):
 @pytest.fixture
 def client(store):
     entitlements.clear_cache()
+    main.provider_queue._primary = main.ProviderQueue.GROQ
+    main._gemini = None
     with TestClient(main.app) as test_client:
         yield test_client
+
+
+def _enable_gemini(monkeypatch, *, error=None):
+    """Wire a fake gemini_complete that returns GOOD_PAYLOAD suggestions."""
+    calls = []
+
+    async def fake_gemini(jpeg_bytes, prompt):
+        calls.append({"jpeg_len": len(jpeg_bytes), "prompt": prompt})
+        if error is not None:
+            raise error
+        data = json.loads(GOOD_PAYLOAD)
+        return (
+            [data["suggestion_1"], data["suggestion_2"], data["suggestion_3"]],
+            data.get("updated_context_summary", ""),
+        )
+
+    monkeypatch.setattr(main, "_gemini", object())
+    monkeypatch.setattr(main, "gemini_complete", fake_gemini)
+    return calls
 
 
 # --- Health --------------------------------------------------------------
@@ -197,9 +219,9 @@ def test_context_keeps_prior_summary_when_model_omits_update(
     assert response.json()["context"]["summary"] == "Prior summary stays"
 
 
-# --- Rate limiting -------------------------------------------------------
+# --- Rate limiting / provider queue --------------------------------------
 
-def test_groq_rate_limit_returns_429_with_retry_after(client, monkeypatch):
+def test_groq_rate_limit_returns_429_when_gemini_unavailable(client, monkeypatch):
     _mock_is_pro(monkeypatch, False)
     request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
     response = httpx.Response(
@@ -220,6 +242,94 @@ def test_groq_rate_limit_returns_429_with_retry_after(client, monkeypatch):
     assert "Rate limit" in result.json()["detail"]
     # Failed before any replies were delivered — do not spend allowance.
     assert client.get("/me", headers=_headers()).json()["free_used"] == 0
+
+
+def test_groq_rate_limit_falls_back_to_gemini(client, monkeypatch):
+    _mock_is_pro(monkeypatch, False)
+    request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    response = httpx.Response(
+        429,
+        headers={"retry-after": "17"},
+        request=request,
+    )
+    err = RateLimitError(
+        "Please try again in 17s.",
+        response=response,
+        body={"error": {"message": "rate limited"}},
+    )
+    groq_calls = _mock_groq(monkeypatch, error=err)
+    gemini_calls = _enable_gemini(monkeypatch)
+
+    result = client.post("/generate-replies", json=_body(), headers=_headers())
+    assert result.status_code == 200
+    assert result.json()["suggestions"] == [
+        "bold of you to assume i'd say no",
+        "you had me at hello",
+        "prove it",
+    ]
+    assert len(groq_calls) == 1
+    assert len(gemini_calls) == 1
+    assert client.get("/me", headers=_headers()).json()["free_used"] == 1
+    assert main.provider_queue._primary == main.ProviderQueue.GEMINI
+
+
+def test_after_demotion_gemini_is_tried_first(client, monkeypatch):
+    _mock_is_pro(monkeypatch, False)
+    main.provider_queue._primary = main.ProviderQueue.GEMINI
+    gemini_calls = _enable_gemini(monkeypatch)
+    groq_calls = _mock_groq(monkeypatch)
+
+    result = client.post("/generate-replies", json=_body(), headers=_headers())
+    assert result.status_code == 200
+    assert len(gemini_calls) == 1
+    assert groq_calls == []
+
+
+def test_groq_success_does_not_call_gemini(client, monkeypatch):
+    _mock_is_pro(monkeypatch, False)
+    _mock_groq(monkeypatch)
+    gemini_calls = _enable_gemini(monkeypatch)
+
+    result = client.post("/generate-replies", json=_body(), headers=_headers())
+    assert result.status_code == 200
+    assert gemini_calls == []
+
+
+def test_both_providers_rate_limited_returns_429(client, monkeypatch):
+    _mock_is_pro(monkeypatch, False)
+    request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    response = httpx.Response(
+        429,
+        headers={"retry-after": "9"},
+        request=request,
+    )
+    err = RateLimitError(
+        "Please try again in 9s.",
+        response=response,
+        body={"error": {"message": "rate limited"}},
+    )
+    _mock_groq(monkeypatch, error=err)
+
+    class _FakeGemini429(Exception):
+        code = 429
+
+    _enable_gemini(monkeypatch, error=_FakeGemini429())
+
+    result = client.post("/generate-replies", json=_body(), headers=_headers())
+    assert result.status_code == 429
+    assert client.get("/me", headers=_headers()).json()["free_used"] == 0
+
+
+def test_groq_error_falls_back_to_gemini(client, monkeypatch):
+    _mock_is_pro(monkeypatch, False)
+    groq_calls = _mock_groq(monkeypatch, error=RuntimeError("groq exploded"))
+    gemini_calls = _enable_gemini(monkeypatch)
+
+    result = client.post("/generate-replies", json=_body(), headers=_headers())
+    assert result.status_code == 200
+    assert groq_calls
+    assert len(gemini_calls) == 1
+    assert client.get("/me", headers=_headers()).json()["free_used"] == 1
 
 
 # --- Allowance increment resilience --------------------------------------

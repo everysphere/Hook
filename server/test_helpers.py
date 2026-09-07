@@ -4,6 +4,7 @@ Nothing here touches the network. Env is stubbed before importing main so a
 developer .env cannot leak into assertions.
 """
 
+import json
 import os
 import tempfile
 
@@ -18,6 +19,7 @@ os.environ.setdefault(
 )
 os.environ.pop("SUPABASE_URL", None)
 os.environ.pop("SUPABASE_SERVICE_ROLE_KEY", None)
+os.environ.pop("GEMINI_API_KEY", None)
 
 import main  # noqa: E402
 from main import (  # noqa: E402
@@ -25,6 +27,7 @@ from main import (  # noqa: E402
     UserPreferences,
     build_context_block,
     build_prompt,
+    parse_suggestions,
     retry_after_seconds,
     strip_reasoning,
 )
@@ -140,14 +143,14 @@ def test_build_context_block_empty_when_blank():
 def test_build_context_block_summary_only():
     ctx = ConversationContext(summary="They asked about coffee.")
     block = build_context_block(ctx)
-    assert "Summary: They asked about coffee." in block
-    assert "already sent" not in block
+    assert "sum: They asked about coffee." in block
+    assert "sent:" not in block
 
 
 def test_build_context_block_sent_replies_only():
     ctx = ConversationContext(summary="", sent_replies=["coffee sounds good"])
     block = build_context_block(ctx)
-    assert "Summary:" not in block
+    assert "sum:" not in block
     assert "- coffee sounds good" in block
 
 
@@ -157,7 +160,7 @@ def test_build_context_block_includes_summary_and_replies():
         sent_replies=["hey there", "what are you up to"],
     )
     block = build_context_block(ctx)
-    assert "Summary: Flirty banter" in block
+    assert "sum: Flirty banter" in block
     assert "- hey there" in block
     assert "- what are you up to" in block
 
@@ -167,18 +170,40 @@ def test_build_prompt_includes_preferences_and_profile():
         _prefs(profile_name="Alex", profile_gender="Male"),
         context=None,
     )
-    assert "style=LOWERCASE" in prompt
-    assert "tone=FUNNY" in prompt
+    assert "LOWERCASE" in prompt
+    assert "FUNNY" in prompt
     assert "flirt=MEDIUM" in prompt
-    assert "length=SHORT" in prompt
+    assert "len=SHORT" in prompt
     assert "emoji=MINIMAL" in prompt
     assert "name=Alex" in prompt
     assert "gender=Male" in prompt
-    assert "Conversation so far" not in prompt
+    assert "ctx" not in prompt
 
 
 def test_build_prompt_embeds_context_block():
     ctx = ConversationContext(summary="Talking about weekend plans")
     prompt = build_prompt(_prefs(), context=ctx)
-    assert "Summary: Talking about weekend plans" in prompt
+    assert "sum: Talking about weekend plans" in prompt
     assert "JSON" in prompt
+
+
+def test_parse_suggestions_happy_path():
+    text = json.dumps({
+        "suggestion_1": "a",
+        "suggestion_2": "b",
+        "suggestion_3": "c",
+        "updated_context_summary": "hi",
+    })
+    suggestions, summary = parse_suggestions(text)
+    assert suggestions == ["a", "b", "c"]
+    assert summary == "hi"
+
+
+def test_parse_suggestions_rejects_partial():
+    text = json.dumps({
+        "suggestion_1": "a",
+        "suggestion_2": "",
+        "suggestion_3": "c",
+        "updated_context_summary": "hi",
+    })
+    assert parse_suggestions(text) == ([], "")
