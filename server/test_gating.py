@@ -33,6 +33,7 @@ from store import (  # noqa: E402
     SupabaseAllowanceStore,
     get_store,
 )
+import store as store_mod  # noqa: E402
 
 API_KEY = "test-app-api-key"
 USER = "11111111-2222-3333-4444-555555555555"
@@ -469,6 +470,116 @@ async def test_supabase_store_falls_back_when_sdk_missing(monkeypatch, tmp_path)
     assert await store_obj.get_used(USER) == 0
     assert isinstance(store_obj._fallback, SqliteAllowanceStore)
     await store_obj.close()
+
+
+class _Pgrst303(Exception):
+    code = "PGRST303"
+
+    def __init__(self):
+        super().__init__("{'message': 'JWT issued at future', 'code': 'PGRST303'}")
+
+
+async def test_supabase_retries_pgrst303_then_succeeds(monkeypatch):
+    class _RetryQuery:
+        def __init__(self):
+            self.attempts = 0
+
+        def select(self, *args, **kwargs):
+            return self
+
+        def eq(self, *args, **kwargs):
+            return self
+
+        def limit(self, *args, **kwargs):
+            return self
+
+        async def execute(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise _Pgrst303()
+            return _FakeResponse([{"used": 2}])
+
+    query = _RetryQuery()
+
+    class _Client:
+        def table(self, name):
+            return query
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(store_mod.asyncio, "sleep", no_sleep)
+
+    store_obj = SupabaseAllowanceStore("https://example.supabase.co", "key")
+    store_obj._client = _Client()
+    store_obj._initialized = True
+    store_obj._fallback = None
+
+    assert await store_obj.get_used(USER) == 2
+    assert query.attempts == 2
+    assert store_obj._fallback is None
+
+
+async def test_supabase_pgrst303_exhausted_falls_back_to_sqlite(
+        monkeypatch, tmp_path):
+    class _Always303Query:
+        def select(self, *a, **k):
+            return self
+
+        def eq(self, *a, **k):
+            return self
+
+        def limit(self, *a, **k):
+            return self
+
+        async def execute(self):
+            raise _Pgrst303()
+
+    class _Always303Client:
+        def table(self, name):
+            return _Always303Query()
+
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(store_mod.asyncio, "sleep", no_sleep)
+
+    store_obj = SupabaseAllowanceStore(
+        "https://example.supabase.co", "key", str(tmp_path / "skew.db"))
+    store_obj._client = _Always303Client()
+    store_obj._initialized = True
+    store_obj._fallback = None
+
+    assert await store_obj.get_used(USER) == 0
+    assert isinstance(store_obj._fallback, SqliteAllowanceStore)
+    await store_obj.close()
+
+
+async def test_supabase_non_skew_errors_still_raise(monkeypatch):
+    class _BoomQuery:
+        def select(self, *a, **k):
+            return self
+
+        def eq(self, *a, **k):
+            return self
+
+        def limit(self, *a, **k):
+            return self
+
+        async def execute(self):
+            raise RuntimeError("relation does not exist")
+
+    class _BoomClient:
+        def table(self, name):
+            return _BoomQuery()
+
+    store_obj = SupabaseAllowanceStore("https://example.supabase.co", "key")
+    store_obj._client = _BoomClient()
+    store_obj._initialized = True
+    store_obj._fallback = None
+
+    with pytest.raises(RuntimeError, match="relation does not exist"):
+        await store_obj.get_used(USER)
 
 
 # --- RevenueCat entitlements (httpx faked) -------------------------------

@@ -77,6 +77,13 @@ object RizzSession {
     /** A screenshot older than this is no longer worth generating from. */
     const val SCREENSHOT_TTL_MS = 2 * 60 * 1000L
 
+    /**
+     * MediaStore often announces the same capture more than once within a
+     * fraction of a second. Stacking those looks like "two screenshots for one
+     * tap"; coalesce instead.
+     */
+    private const val DUPLICATE_CAPTURE_MS = 1_500L
+
     /** How long a finished session stays on screen. */
     private const val SUGGESTIONS_TTL_MS = 5 * 60 * 1000L
 
@@ -157,12 +164,29 @@ object RizzSession {
      * This only records the screenshot. Generation starts when someone claims
      * it with [claimForScreenshot], so the two can't disagree about whether a
      * round is owed.
+     *
+     * Near-duplicate announcements of the *same* capture (MediaStore double
+     * fire) replace the latest screenshot card instead of stacking a second.
      */
     @Synchronized
     fun onScreenshot(bitmap: Bitmap) {
+        val now = System.currentTimeMillis()
+        if (latestScreenshotId != NONE && now - screenshotAt < DUPLICATE_CAPTURE_MS) {
+            items = items.map { item ->
+                if (item is TranscriptItem.Screenshot && item.id == latestScreenshotId) {
+                    TranscriptItem.Screenshot(item.id, bitmap)
+                } else {
+                    item
+                }
+            }
+            screenshotAt = now
+            error = null
+            return
+        }
+
         val id = nextScreenshotId++
         latestScreenshotId = id
-        screenshotAt = System.currentTimeMillis()
+        screenshotAt = now
         error = null
         items = items.filterNot { it is TranscriptItem.Suggestion || it is TranscriptItem.Typing } +
             TranscriptItem.Screenshot(id, bitmap)

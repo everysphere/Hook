@@ -197,6 +197,11 @@ class SupabaseAllowanceStore(AllowanceStore):
     supabase_schema.sql): PostgREST cannot do a read-modify-write atomically, so
     a select-then-update from here would race and hand out extra free
     generations under concurrent requests.
+
+    Supabase intermittently returns PGRST303 ("JWT issued at future") when its
+    gateway mints a short-lived JWT that PostgREST rejects under clock skew.
+    That is a platform bug, not a bad key — we retry briefly, then fall back to
+    SQLite so /me and /generate-replies keep answering instead of 500-ing.
     """
 
     def __init__(self, url: str, service_role_key: str,
@@ -247,53 +252,119 @@ class SupabaseAllowanceStore(AllowanceStore):
             self._initialized = True
             return self._fallback
 
+    async def _demote_to_sqlite(self, err: Exception, op: str) -> AllowanceStore:
+        """Stop using Supabase for this process after a hard failure."""
+        if self._fallback is None:
+            print(f"[ERR] Supabase {op} failed ({err}) — falling back to SQLite "
+                  f"for this process. Free counters may reset until Supabase "
+                  f"recovers.")
+            self._fallback = _new_sqlite_store(self._fallback_path)
+        self._client = None
+        return self._fallback
+
+    async def _run(self, op: str, call):
+        """Retry PGRST303 (Supabase gateway clock skew), then SQLite last resort.
+
+        Community reports: identical requests with sb_secret_ keys often succeed
+        after ~300ms–1.5s. Other errors are not skew — re-raise them.
+        """
+        last_err: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                return await call()
+            except Exception as e:
+                last_err = e
+                if not _is_pgrst303(e):
+                    raise
+                if attempt < 2:
+                    # Matches observed recoveries (~300ms / ~900ms) in
+                    # supabase/supabase#49655 and community retry wrappers.
+                    delay = 0.3 * (attempt + 1)
+                    print(f"[WARN] Supabase {op}: PGRST303 clock skew — "
+                          f"retrying in {delay:.2f}s ({attempt + 1}/2)")
+                    await asyncio.sleep(delay)
+                    continue
+        fallback = await self._demote_to_sqlite(last_err or RuntimeError(op), op)
+        return fallback
+
     async def get_used(self, app_user_id: str) -> int:
         fallback = await self._ensure_ready()
         if fallback is not None:
             return await fallback.get_used(app_user_id)
 
-        response = await (
-            self._client.table(ALLOWANCE_TABLE)
-            .select("used")
-            .eq("app_user_id", app_user_id)
-            .limit(1)
-            .execute()
-        )
-        rows = response.data or []
-        if not rows:
-            return 0
-        return int(rows[0].get("used") or 0)
+        async def call():
+            response = await (
+                self._client.table(ALLOWANCE_TABLE)
+                .select("used")
+                .eq("app_user_id", app_user_id)
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            if not rows:
+                return 0
+            return int(rows[0].get("used") or 0)
+
+        result = await self._run("get_used", call)
+        if isinstance(result, AllowanceStore):
+            return await result.get_used(app_user_id)
+        return result
 
     async def increment(self, app_user_id: str) -> int:
         fallback = await self._ensure_ready()
         if fallback is not None:
             return await fallback.increment(app_user_id)
 
-        response = await self._client.rpc(
-            INCREMENT_RPC, {"p_app_user_id": app_user_id}
-        ).execute()
-        data = response.data
-        # The function returns a scalar integer; PostgREST may box it in a list.
-        if isinstance(data, list):
-            data = data[0] if data else 0
-        if isinstance(data, dict):
-            data = data.get(INCREMENT_RPC, data.get("used", 0))
-        return int(data or 0)
+        async def call():
+            response = await self._client.rpc(
+                INCREMENT_RPC, {"p_app_user_id": app_user_id}
+            ).execute()
+            data = response.data
+            # The function returns a scalar integer; PostgREST may box it in a list.
+            if isinstance(data, list):
+                data = data[0] if data else 0
+            if isinstance(data, dict):
+                data = data.get(INCREMENT_RPC, data.get("used", 0))
+            return int(data or 0)
+
+        result = await self._run("increment", call)
+        if isinstance(result, AllowanceStore):
+            return await result.increment(app_user_id)
+        return result
 
     async def save_onboarding_profile(self, app_user_id: str, profile: dict) -> None:
         fallback = await self._ensure_ready()
         if fallback is not None:
             return await fallback.save_onboarding_profile(app_user_id, profile)
 
-        row = {"app_user_id": app_user_id}
-        row.update({f: profile.get(f) for f in ONBOARDING_FIELDS})
-        row["completed_at"] = _now_iso()
-        await self._client.table(ONBOARDING_TABLE).upsert(row).execute()
+        async def call():
+            row = {"app_user_id": app_user_id}
+            row.update({f: profile.get(f) for f in ONBOARDING_FIELDS})
+            row["completed_at"] = _now_iso()
+            await self._client.table(ONBOARDING_TABLE).upsert(row).execute()
+            return None
+
+        result = await self._run("save_onboarding_profile", call)
+        if isinstance(result, AllowanceStore):
+            await result.save_onboarding_profile(app_user_id, profile)
 
     async def close(self) -> None:
         self._client = None
         if self._fallback is not None:
             await self._fallback.close()
+
+
+def _is_pgrst303(err: Exception) -> bool:
+    """True for Supabase/PostgREST 'JWT issued at future' clock-skew errors."""
+    code = getattr(err, "code", None)
+    if code == "PGRST303":
+        return True
+    # supabase-py sometimes nests the payload on .json / args.
+    payload = getattr(err, "json", None) or getattr(err, "args", None)
+    if isinstance(payload, dict) and payload.get("code") == "PGRST303":
+        return True
+    text = str(err)
+    return "PGRST303" in text or "JWT issued at future" in text
 
 
 def _sqlite_path_from_env() -> str:

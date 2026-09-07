@@ -27,6 +27,8 @@ object ScreenshotScanner {
      */
     private const val LOOKBACK_MS = 60_000L
 
+    private val lock = Any()
+
     @Volatile
     private var lastPath: String? = null
 
@@ -37,39 +39,44 @@ object ScreenshotScanner {
         read(context, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, LOOKBACK_MS)
 
     private fun read(context: Context, uri: Uri, freshMs: Long): Bitmap? {
-        val projection = arrayOf(
-            MediaStore.Images.Media.DATA,
-            MediaStore.Images.Media.DATE_ADDED
-        )
-        val sort = if (uri == MediaStore.Images.Media.EXTERNAL_CONTENT_URI) {
-            "${MediaStore.Images.Media.DATE_ADDED} DESC"
-        } else {
-            null
-        }
-        return try {
-            context.contentResolver.query(uri, projection, null, null, sort)?.use { cursor ->
-                val pathIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATA)
-                val dateIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATE_ADDED)
-                if (pathIndex < 0 || dateIndex < 0) return null
-                while (cursor.moveToNext()) {
-                    val path = cursor.getString(pathIndex) ?: continue
-                    val dateAdded = cursor.getLong(dateIndex) * 1000
-                    if (System.currentTimeMillis() - dateAdded >= freshMs) {
-                        if (sort != null) return null
-                        continue
-                    }
-                    if (File(path).name.startsWith(".pending-")) continue
-                    if (!looksLikeScreenshot(path)) continue
-                    if (path == lastPath) return null
-                    val bitmap = load(path) ?: continue
-                    lastPath = path
-                    return bitmap
-                }
+        // MediaStore fires onChange several times per capture (insert + updates).
+        // Without this lock two concurrent reads can both pass the lastPath check
+        // and the keyboard stacks two identical screenshots for one tap.
+        synchronized(lock) {
+            val projection = arrayOf(
+                MediaStore.Images.Media.DATA,
+                MediaStore.Images.Media.DATE_ADDED
+            )
+            val sort = if (uri == MediaStore.Images.Media.EXTERNAL_CONTENT_URI) {
+                "${MediaStore.Images.Media.DATE_ADDED} DESC"
+            } else {
                 null
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error reading screenshot", e)
-            null
+            return try {
+                context.contentResolver.query(uri, projection, null, null, sort)?.use { cursor ->
+                    val pathIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATA)
+                    val dateIndex = cursor.getColumnIndex(MediaStore.Images.Media.DATE_ADDED)
+                    if (pathIndex < 0 || dateIndex < 0) return null
+                    while (cursor.moveToNext()) {
+                        val path = cursor.getString(pathIndex) ?: continue
+                        val dateAdded = cursor.getLong(dateIndex) * 1000
+                        if (System.currentTimeMillis() - dateAdded >= freshMs) {
+                            if (sort != null) return null
+                            continue
+                        }
+                        if (File(path).name.startsWith(".pending-")) continue
+                        if (!looksLikeScreenshot(path)) continue
+                        if (path == lastPath) return null
+                        val bitmap = load(path) ?: continue
+                        lastPath = path
+                        return bitmap
+                    }
+                    null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error reading screenshot", e)
+                null
+            }
         }
     }
 

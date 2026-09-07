@@ -136,7 +136,10 @@ val StyleQuestions = listOf(
         options = listOf(
             FlirtLevel.LESS.option("you seem fun. what's your week looking like?"),
             FlirtLevel.MEDIUM.option("you might be my type, wanna prove me right?"),
-            FlirtLevel.BOLD.option("you're trouble, and I'm not looking for a way out")
+            FlirtLevel.BOLD.option("you're trouble, and I'm not looking for a way out"),
+            FlirtLevel.EXTRA_BOLD.option(
+                "skip the small talk — when are you coming over tonight?"
+            )
         ),
         // The last question of the flow: the button builds the keyboard rather
         // than continuing to yet another screen.

@@ -38,7 +38,7 @@
     <!-- API Configuration -->
     <!-- Production server URL. HTTPS only (no cleartext/localhost in release). -->
     <!-- The app reads this from ApiService's default serverUrl; keep them in sync. -->
-    <string name="api_server_url">https://hook.onrender.com</string>
+    <string name="api_server_url">https://hook-u23k.onrender.com</string>
     
     <!-- Common -->
     <string name="next">Next</string>

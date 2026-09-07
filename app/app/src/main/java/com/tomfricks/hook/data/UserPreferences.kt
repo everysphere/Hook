@@ -40,7 +40,8 @@ enum class MessageTone(val displayName: String, val proOnly: Boolean = false) {
 enum class FlirtLevel(val displayName: String, val proOnly: Boolean = false) {
     LESS("Less"),
     MEDIUM("Moderate"),
-    BOLD("Bold", proOnly = true)
+    BOLD("Bold", proOnly = true),
+    EXTRA_BOLD("Extra Bold", proOnly = true)
 }
 
 enum class ReplyLength(val displayName: String, val proOnly: Boolean = false) {

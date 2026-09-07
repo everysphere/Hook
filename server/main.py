@@ -157,7 +157,7 @@ async def authenticate(
 class UserPreferences(BaseModel):
     style: Literal["LOWERCASE", "SENTENCE_CASE"]
     tone: Literal["GEN_Z_SLANG", "RESPECTFUL", "FUNNY", "SMOOTH"]
-    flirt_level: Literal["LESS", "MEDIUM", "BOLD"]
+    flirt_level: Literal["LESS", "MEDIUM", "BOLD", "EXTRA_BOLD"]
     reply_length: Literal["SHORT", "NORMAL", "EXTENDED"]
     emoji_use: Literal["NEVER", "MINIMAL", "EXPRESSIVE"]
     profile_name: Optional[str] = ""
@@ -282,6 +282,7 @@ PROMPT_TEMPLATE = """3 flirty chat replies for this screenshot. JSON only.
 {context_block}
 prefs: {style}/{tone}/flirt={flirt_level}/len={reply_length}/emoji={emoji_use}{profile_info}
 len: SHORT=3-4 words; NORMAL=1 sentence; EXTENDED=1-2 sentences
+flirt: LESS < MEDIUM < BOLD < EXTRA_BOLD (EXTRA_BOLD = very forward / explicit-leaning)
 JSON: {{"suggestion_1":"...","suggestion_2":"...","suggestion_3":"...","updated_context_summary":"≤60 words; fold this shot into prior facts"}}"""
 
 
